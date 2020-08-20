@@ -327,7 +327,7 @@ const size_t outAvail = (!doReceive || needRead) ? mOut.dataSize() : 0; //检查
 
 ## 三、实践
 
-本文是`Binder`样例客户端程序，结合`AIDL`通过服务的**双向绑定**实现第三方登录调用服务端功能。服务端程序参考：
+本文是`Binder`样例客户端程序，结合`AIDL`通过服务的**双向绑定**实现第三方登录调用服务端功能。服务端程序参考：[NeBinderSampleServer](https://github.com/tianyalu/NeBinderSampleServer)
 
 ### 3.1 实现效果
 
@@ -337,11 +337,260 @@ const size_t outAvail = (!doReceive || needRead) ? mOut.dataSize() : 0; //检查
 
 ### 3.2 客户端实现步骤
 
+#### 3.2.1 生成`AIDL`
 
+```java
+//服务端和客户端的aidl包名必须一致！！！
+package com.sty.ne.bindersample;
+interface ILoginInterface {
+    //登录
+    void login();
+    //登录返回
+    void loginCallback(boolean loginStatus, String loginUser);
+}
+```
+
+#### 3.2.2 返回结果的服务的定义与注册
+
+定义：
+
+```java
+public class ResultService extends Service {
+  @Nullable
+  @Override
+  public IBinder onBind(Intent intent) {
+    return new ILoginInterface.Stub() {
+      @Override
+      public void login() throws RemoteException {
+      }
+
+      @Override
+      public void loginCallback(boolean loginStatus, String loginUser) throws RemoteException {
+        //不用挂起等到暗无天日
+        Log.e("sty ---> ", "loginStatus: " + loginStatus + " / loginUser: " + loginUser);
+      }
+    };
+  }
+}
+```
+
+在清单文件中注册：
+
+```xml
+<application>
+  <!-- 是否能被系统实例化   是否能被其它应用隐式调用 应用程序需要使用该服务的话需要自动创建名字叫remote_server的进程-->
+  <service
+           android:name=".service.ResultService"
+           android:enabled="true"
+           android:exported="true"
+           android:process=":remote">
+    <intent-filter>
+      <action android:name="Binder_Client_Action"/>
+    </intent-filter>
+  </service>
+</application>
+```
+
+#### 3.2.3 绑定服务
+
+注意有绑定也必须有解绑：
+
+```java
+private ServiceConnection conn = new ServiceConnection() {
+  @Override
+  public void onServiceConnected(ComponentName name, IBinder service) {
+    //使用Server提供的功能（方法）
+    iLoginInterface = ILoginInterface.Stub.asInterface(service);
+  }
+
+  @Override
+  public void onServiceDisconnected(ComponentName name) {
+  }
+};
+
+//绑定服务
+private void initBindService() {
+  Intent intent = new Intent();
+  //设置Server应用Action(服务的唯一标识）
+  intent.setAction("Binder_Server_Action");
+  //设置Server应用包名
+  intent.setPackage("com.sty.ne.binder.sample.server");
+  //开启绑定服务
+  bindService(intent, conn, BIND_AUTO_CREATE);
+  //标识跨进程绑定
+  isStartRemote = true;
+}
+
+@Override
+protected void onDestroy() {
+  super.onDestroy();
+  //解绑服务，一定要写，否则可能出现服务连接资源异常
+  if(isStartRemote) {
+    unbindService(conn);
+  }
+}
+```
+
+#### 3.2.4 调起第三方登录服务
+
+```java
+public void startQQLoginAction(View view) {
+  if(iLoginInterface != null) {
+    //调用Server提供的功能、方法
+    try {
+      iLoginInterface.login();
+    } catch (DeadObjectException e1) {  //System.err: android.os.DeadObjectException
+      //远端进程挂掉了，重新绑定
+      rebindService();
+    } catch (RemoteException e) {
+      e.printStackTrace();
+    }
+  }else {
+    Toast.makeText(this, "请先安装QQ应用", Toast.LENGTH_SHORT).show();
+  }
+}
+
+private void rebindService() {
+  unbindService(conn);
+  initBindService();
+}
+```
 
 ### 3.3 服务端实现步骤
 
+#### 3.3.1 生成`AIDL`
 
+```java
+//服务端和客户端的aidl包名必须一致！！！
+package com.sty.ne.bindersample;
+interface ILoginInterface {
+    //登录
+    void login();
+    //登录返回
+    void loginCallback(boolean loginStatus, String loginUser);
+}
+```
+
+#### 3.3.2 登录服务的定义与注册
+
+定义：
+
+```java
+public class LoginService extends Service {
+    @Nullable
+    @Override
+    public IBinder onBind(Intent intent) {
+        return new ILoginInterface.Stub() {
+            @Override
+            public void login() throws RemoteException {
+                Log.e("sty --> ", "Binder_Server_Login_Service");
+                //单向通信，真实的项目中跨进程都是双向通信，双向服务绑定的
+                serviceStartActivity();
+            }
+
+            @Override
+            public void loginCallback(boolean loginStatus, String loginUser) throws RemoteException {
+            }
+        };
+    }
+
+    //启动界面
+    private void serviceStartActivity() {
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(intent);
+    }
+}
+```
+
+在清单文件中注册：
+
+```xml
+<application>
+<!-- ... -->
+  <!--是否能被系统实例化 是否能被其它应用隐式调用 应用程序需要使用该服务的话需要自动创建名字叫remote_server的进程-->
+  <service android:name=".service.LoginService"
+           android:enabled="true"
+           android:exported="true"
+           android:process=":remote_server">
+    <intent-filter>
+      <action android:name="Binder_Server_Action"/>
+    </intent-filter>
+  </service>
+</application>
+```
+
+#### 3.3.3 绑定服务
+
+注意有绑定也必须有解绑：
+
+```java
+private ServiceConnection conn = new ServiceConnection() {
+  @Override
+  public void onServiceConnected(ComponentName name, IBinder service) {
+    iLoginInterface = ILoginInterface.Stub.asInterface(service);
+  }
+
+  @Override
+  public void onServiceDisconnected(ComponentName name) {
+  }
+};
+
+private void initBindService() {
+  Intent intent = new Intent();
+  intent.setAction("Binder_Client_Action");
+  intent.setPackage("com.sty.ne.bindersample");
+  bindService(intent, conn, BIND_AUTO_CREATE);
+  isStartRemote = true;
+}
+
+@Override
+protected void onDestroy() {
+  super.onDestroy();
+  if(isStartRemote) {
+    unbindService(conn);
+  }
+}
+```
+
+#### 3.3.4 模拟登录
+
+```java
+public void startLogin(View view) {
+  final String name = etName.getText().toString().trim();
+  final String pwd = etPwd.getText().toString().trim();
+
+  //... 判空与对话框展示
+ 
+  new Thread(new Runnable() {
+    @Override
+    public void run() {
+      SystemClock.sleep(2000);
+      runOnUiThread(new Runnable() {
+        @Override
+        public void run() {
+          try {
+            boolean loginStatus = false;
+            if(NAME.equals(name) && PWD.equals(pwd)) {
+              Toast.makeText(MainActivity.this, "QQ登录成功", Toast.LENGTH_SHORT).show();
+              loginStatus = true;
+              //登录成功，销毁界面
+              finish();
+            }else {
+              Toast.makeText(MainActivity.this, "QQ登录失败", Toast.LENGTH_SHORT).show();
+            }
+            dialog.dismiss();
+            //告知Client，登录结果返回
+            iLoginInterface.loginCallback(loginStatus, name);
+          } catch (RemoteException e) {
+            e.printStackTrace();
+          }
+        }
+      });
+    }
+  }).start();
+}
+```
 
 
 
